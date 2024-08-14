@@ -113,6 +113,7 @@ FLOWS = {
         "coolmaster",
         "cpuspeed",
         "crownstone",
+        "cslab",
         "daikin",
         "deconz",
         "deluge",
