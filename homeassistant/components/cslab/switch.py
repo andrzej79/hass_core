@@ -65,6 +65,11 @@ class CSSwitch(SwitchEntity):
         self._dev.remove_callback(self.async_write_ha_state)
 
     @property
+    def available(self) -> bool:
+        """Return True if entity is available."""
+        return self._dev.online and self._csmaster.master_online
+
+    @property
     def device_info(self) -> DeviceInfo | None:
         """Return the device info."""
         return DeviceInfoFromHomeItem(self._home_item)

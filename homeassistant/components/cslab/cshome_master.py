@@ -12,7 +12,13 @@ from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import CONF_API_VERSION, CONF_HOST
 
 from .const import CSMASTER_TCP_PORT, DOMAIN
-from .cshome_helpers import AccType, CSHomeItem, CSHomeItemFromJson
+from .cshome_helpers import (
+    AccType,
+    CSHomeItem,
+    CSHomeItemFromJson,
+    CSModule,
+    CSModuleFromJson,
+)
 
 _log = logging.getLogger(__name__)
 
@@ -31,9 +37,13 @@ class CSHomeMaster:
         self._blinds: list[CSBlindDev] = []
         self._relays: list[CSRelayDev] = []
         self._switches: list[CSWallSwitchDev] = []
+        self._hwModules: list[CSModule] = []
+        self._ctrlModDevs: list[CSLightsCtrlModDev] = []
         self._tst = 0.0
         self._tcpConnectionReady = asyncio.Event()
         self._homeModelReady = asyncio.Event()
+        self._moduleListReady = asyncio.Event()
+        self._master_online = False
         self._tcpReader: asyncio.StreamReader | None = None
         self._tcpWriter: asyncio.StreamWriter | None = None
         _log.info("CSHomeMaster initialized host: %s port: %d", self.host, self.port)
@@ -54,8 +64,18 @@ class CSHomeMaster:
         except TimeoutError:
             _log.error("Home model receive timeout!")
             return False
+        try:
+            await asyncio.wait_for(self.getModuleList(), timeout=5)
+        except TimeoutError:
+            _log.error("Module list receive timeout!")
+            return False
         # connection ready, home model received
         return True
+
+    @property
+    def master_online(self) -> bool:
+        """Return master online status."""
+        return self._master_online
 
     async def async_task(self) -> None:
         """Async task."""
@@ -67,9 +87,12 @@ class CSHomeMaster:
                     raise RuntimeError("TCP reader is None")
                 rplData = await self._tcpReader.readline()
                 if len(rplData) == 0:
+                    self._master_online = False
+                    await self.devs_publish_update()
                     _log.error("Connection error, reconnecting...")
                     await asyncio.sleep(5)
                     if await self.initConnection() is True:
+                        await self.devs_publish_update()
                         _log.info("Connection restored")
                     continue
                 await self.parseIncomingData(rplData)
@@ -92,6 +115,7 @@ class CSHomeMaster:
         except OSError as e:
             _log.error("Failed to connect to %s: %s", self.host, e)
             return False
+        self._master_online = True
         self._tcpConnectionReady.set()
         return True
 
@@ -113,6 +137,10 @@ class CSHomeMaster:
             await self.handleIncomingHomeModel(jrpl)
         elif jrpl.get("rpl-type") == "wled-diag":
             await self.handleIncomingWLedDiag(jrpl)
+        elif jrpl.get("rpl-type") == "module-list":
+            await self.handleIncomingModuleList(jrpl)
+        elif jrpl.get("rpl-type") == "lbus-status":
+            await self.handleIncomingLBusStatus(jrpl)
         else:
             _log.error("Unknown json data: %s", jrpl)
 
@@ -130,6 +158,7 @@ class CSHomeMaster:
         value = jrpl.get("value")
         for light in self._lights:
             if light.get_home_item().accessory.id == acc_id:
+                await light.set_online(True)
                 if brightness is not None and isOn is not None:
                     await light.set_current_brightness_and_state(brightness, isOn)
                     return
@@ -141,6 +170,7 @@ class CSHomeMaster:
                 return
         for blind in self._blinds:
             if blind.get_home_item().accessory.id == acc_id:
+                await blind.set_online(True)
                 if currPos is not None:
                     _log.debug("acc[%d] currPos: %.2f", acc_id, currPos)
                     await blind.set_current_position(currPos)
@@ -151,13 +181,16 @@ class CSHomeMaster:
                 return
         for relay in self._relays:
             if relay.get_home_item().accessory.id == acc_id:
+                await relay.set_online(True)
                 if state is not None:
                     await relay.set_current_state(state)
                 # accessory found, no need to continue
                 return
         for switch in self._switches:
             if switch.get_home_item().accessory.id == acc_id:
+                await switch.set_online(True)
                 if value is not None:
+                    _log.debug("update of wall switch %d to %s", acc_id, value)
                     await switch.set_current_state(value)
                 # accessory found, no need to continue
                 return
@@ -206,6 +239,52 @@ class CSHomeMaster:
             _log.debug("updated: WLED diag: sn:%s vled:%.3f tntc:%.3f", sn, vled, tntc)
             # accessory found, no need to continue
             break
+
+    async def handleIncomingModuleList(self, jrpl: dict) -> None:
+        """Handle incoming module list."""
+        _log.info("Received module list")
+        modules = jrpl.get("modules")
+        if modules is None:
+            _log.error("Invalid json (no modules) in module list reply: %s", jrpl)
+            return
+        for mod in modules:
+            module = CSModuleFromJson(mod)
+            self._hwModules.append(module)
+            if "lbusCount" not in mod:
+                continue
+            lbusCount = mod["lbusCount"]
+            if lbusCount > 0:
+                self._ctrlModDevs.append(CSLightsCtrlModDev(self, module, lbusCount))
+        self._moduleListReady.set()
+
+    async def handleIncomingLBusStatus(self, jrpl: dict) -> None:
+        """Handle incoming light bus status."""
+        mod_json = jrpl.get("module")
+
+        # Validate essential fields
+        if (
+            not mod_json
+            or "sn" not in mod_json
+            or "lbusIndex" not in jrpl
+            or "current" not in jrpl
+        ):
+            _log.error("Invalid json light bus status data: %s", jrpl)
+            return
+
+        # Extract necessary values
+        sn = mod_json["sn"]
+        lbusIdx = jrpl["lbusIndex"]
+        current = jrpl["current"]
+
+        # Iterate through control modules and find matching serial number
+        for ctrlModDev in self._ctrlModDevs:
+            module = ctrlModDev.get_module()
+            if module.sn == sn:
+                await ctrlModDev.set_lb_current(lbusIdx, current)
+                # Trigger update if this is the last light bus index
+                if lbusIdx == (ctrlModDev.get_lb_count() - 1):
+                    await ctrlModDev.trigger_publish_updates()
+                return
 
     async def setAccBrightnessValue(self, accId: int, value: float) -> bool:
         """Set Accessory Brightness value."""
@@ -284,6 +363,37 @@ class CSHomeMaster:
             return False
         return True
 
+    async def getModuleList(self) -> bool:
+        """Get module list."""
+        data = {"command": "GetModules"}
+        data_str = json.dumps(data)
+        if self._tcpWriter is None:
+            _log.error("TCP writer is None")
+            return False
+        self._tcpWriter.write(data_str.encode())
+        await self._tcpWriter.drain()
+        # wait for module list to be ready
+        try:
+            await asyncio.wait_for(self._moduleListReady.wait(), timeout=5)
+        except TimeoutError:
+            _log.error("Module list not receive timeout")
+            return False
+        return True
+
+    async def devs_publish_update(self) -> None:
+        """Set publish update for all devices."""
+        for light in self._lights:
+            await light.publish_updates()
+        await asyncio.sleep(0.2)
+        for blind in self._blinds:
+            await blind.publish_updates()
+        await asyncio.sleep(0.2)
+        for relay in self._relays:
+            await relay.publish_updates()
+        await asyncio.sleep(0.2)
+        for switch in self._switches:
+            await switch.publish_updates()
+
     def get_home_items(self):
         """Return home items."""
         return self._home_items
@@ -303,6 +413,10 @@ class CSHomeMaster:
     def get_wall_switches(self):
         """Return wall switches."""
         return self._switches
+
+    def get_ctrl_mod_devs(self):
+        """Return control module devices."""
+        return self._ctrlModDevs
 
     @property
     def host(self) -> str:
@@ -326,6 +440,7 @@ class CSBaseDev:
         self._csmaster = csmaster
         self._home_item = item
         self._name = item.accessory.name
+        self._online = False
         self._callbacks: set[Callable[[], None]] = set()
 
     def get_home_item(self) -> CSHomeItem:
@@ -342,6 +457,18 @@ class CSBaseDev:
     def remove_callback(self, callback: Callable[[], None]) -> None:
         """Remove previously registered callback."""
         self._callbacks.discard(callback)
+
+    @property
+    def online(self) -> bool:
+        """Return online state."""
+        return self._online
+
+    async def set_online(self, online: bool) -> None:
+        """Set online state."""
+        if self._online == online:
+            return
+        self._online = online
+        await self.publish_updates()
 
     async def publish_updates(self) -> None:
         """Publish updates to all registered callbacks."""
@@ -503,3 +630,56 @@ class CSWallSwitchDev(CSBaseDev):
         """Set current state of the switch."""
         self._current_state = state
         await self.publish_updates()
+
+
+###################################################
+# CSLightsCtrl module device
+###################################################
+class CSLightsCtrlModDev:
+    """Base class for csLights devices."""
+
+    def __init__(self, csmaster: CSHomeMaster, module: CSModule, lb_count: int) -> None:
+        """Initialize the device."""
+        self._csmaster = csmaster
+        self._module = module
+        self._callbacks: set[Callable[[], None]] = set()
+        self._lbCurrents: list[float] = [0.0] * lb_count
+
+    def get_module(self) -> CSModule:
+        """Return module."""
+        return self._module
+
+    def get_lb_count(self) -> int:
+        """Return light bus count."""
+        return len(self._lbCurrents)
+
+    def get_lb_current(self, lb_idx: int) -> float | None:
+        """Return light bus current."""
+        if lb_idx < len(self._lbCurrents):
+            return self._lbCurrents[lb_idx]
+        return None
+
+    async def set_lb_current(self, lb_idx: int, current: float) -> None:
+        """Set light bus current."""
+        if lb_idx < len(self._lbCurrents):
+            self._lbCurrents[lb_idx] = current
+
+    async def trigger_publish_updates(self) -> None:
+        """Trigger publish updates."""
+        await self.publish_updates()
+
+    def register_callback(self, callback: Callable[[], None]) -> None:
+        """Register callback, called when Roller changes state."""
+        if callback in self._callbacks:
+            _log.warning("Callback already registered!")
+        else:
+            self._callbacks.add(callback)
+
+    def remove_callback(self, callback: Callable[[], None]) -> None:
+        """Remove previously registered callback."""
+        self._callbacks.discard(callback)
+
+    async def publish_updates(self) -> None:
+        """Publish updates to all registered callbacks."""
+        for callback in self._callbacks:
+            callback()

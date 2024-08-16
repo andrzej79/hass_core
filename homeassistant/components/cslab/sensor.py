@@ -12,6 +12,7 @@ from homeassistant.components.sensor import (
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import (
     EntityCategory,
+    UnitOfElectricCurrent,
     UnitOfElectricPotential,
     UnitOfTemperature,
 )
@@ -23,10 +24,11 @@ from .const import DOMAIN
 from .cshome_helpers import (
     AccType,
     CSModuleType,
+    DeviceInfoFromCSModule,
     DeviceInfoFromHomeItem,
     DeviceModelFromType,
 )
-from .cshome_master import CSHomeMaster, CSLightDev, CSWallSwitchDev
+from .cshome_master import CSHomeMaster, CSLightDev, CSLightsCtrlModDev, CSWallSwitchDev
 
 _log = logging.getLogger(__name__)
 
@@ -66,8 +68,17 @@ async def async_setup_entry(
             continue
         sensor_entities.append(CSWallSwitchSensor(csmaster, wall_switch))
 
-    # add light entities to Home Assistant
+    # add light-sensor entities to Home Assistant
     async_add_entities(sensor_entities, True)
+
+    # prepare light-bus current diagnostic sensors entities
+    lb_sensor_entities: list[CSLightBusSensor] = [
+        CSLightBusSensor(csmaster, ctrl_mod_dev, lb_idx)
+        for ctrl_mod_dev in csmaster.get_ctrl_mod_devs()
+        for lb_idx in range(ctrl_mod_dev.get_lb_count())
+    ]
+    # add light-bus current sensor entities to Home Assistant
+    async_add_entities(lb_sensor_entities, True)
 
 
 ####################################################################################################
@@ -97,6 +108,11 @@ class CSLightSensorBase(SensorEntity):
     async def async_will_remove_from_hass(self) -> None:
         """Entity being removed from hass."""
         self._dev.remove_callback(self.async_write_ha_state)
+
+    @property
+    def available(self) -> bool:
+        """Return True if entity is available."""
+        return self._dev.online and self._csmaster.master_online
 
     @property
     def device_info(self) -> DeviceInfo | None:
@@ -201,6 +217,70 @@ class CSWallSwitchSensor(CSLightSensorBase):
         return f"{DeviceModelFromType(acc.type)}.{acc.id:03}.switch"
 
     @property
-    def native_value(self) -> float | None:
+    def native_value(self) -> int | None:
         """Return the state of the sensor."""
         return self._dev.get_current_state()
+
+
+####################################################################################################
+# csLightsCtrl module light bus current sensor class
+####################################################################################################
+class CSLightBusSensor(SensorEntity):
+    """CSLightCtrl module light bus current sensor."""
+
+    should_poll = False
+
+    def __init__(
+        self, csmaster: CSHomeMaster, dev: CSLightsCtrlModDev, lb_idx: int
+    ) -> None:
+        """Initialize the sensor."""
+        self._name: str = f"lb_{lb_idx} current"
+        self._dev = dev
+        self._lb_idx = lb_idx
+        self._csmaster = csmaster
+        self._attr_state_class = SensorStateClass.MEASUREMENT
+        self._attr_icon = "mdi:current-dc"
+        self._attr_entity_category = EntityCategory.DIAGNOSTIC
+        self._attr_native_unit_of_measurement = UnitOfElectricCurrent.MILLIAMPERE
+        self._attr_device_class = SensorDeviceClass.CURRENT
+        self._attr_suggested_display_precision = 0
+
+    async def async_added_to_hass(self) -> None:
+        """Run when this Entity has been added to HA."""
+        self._dev.register_callback(self.async_write_ha_state)
+
+    async def async_will_remove_from_hass(self) -> None:
+        """Entity being removed from hass."""
+        self._dev.remove_callback(self.async_write_ha_state)
+
+    @property
+    def unique_id(self) -> str:
+        """Return a unique ID."""
+        mod = self._dev.get_module()
+        return f"lb.{mod.mac}.{self._lb_idx}.current"
+
+    @property
+    def device_info(self) -> DeviceInfo | None:
+        """Return the device info."""
+        return DeviceInfoFromCSModule(self._dev.get_module())
+
+    @property
+    def device_id(self) -> str | None:
+        """Return the device ID."""
+        return self.unique_id
+
+    @property
+    def name(self) -> str | None:
+        """Return the name of the sensor."""
+        return self._name
+
+    @property
+    def native_value(self) -> float | None:
+        """Return the state of the sensor."""
+        current = self._dev.get_lb_current(self._lb_idx)
+        if current is None:
+            return None
+        return current * 1000.0  # native units are mA
+
+    async def async_update(self) -> None:
+        """Fetch new state data for the sensor."""

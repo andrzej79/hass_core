@@ -102,6 +102,14 @@ class CSModule:
 
 
 @dataclass
+class CSLightBus:
+    """Class for LightBus."""
+
+    module: CSModule
+    index: int
+
+
+@dataclass
 class Service:
     """Class for service."""
 
@@ -153,6 +161,17 @@ class CSHomeItem:
         return None
 
 
+def CSModuleFromJson(data) -> CSModule:
+    """Create CSModule from dict."""
+    return CSModule(
+        mac=data.get("mac"),
+        sn=data.get("sn"),
+        name=data.get("name"),
+        type=CSModuleType(data.get("type")),
+        index=data.get("index"),
+    )
+
+
 def CSHomeItemFromJson(data) -> CSHomeItem:
     """Create CSHomeItem from dict."""
     acc_dict = data.get("accessory")
@@ -180,13 +199,7 @@ def CSHomeItemFromJson(data) -> CSHomeItem:
         )
         modules = []
         for mod in svc_item.get("modules"):
-            module = CSModule(
-                mac=mod.get("mac"),
-                sn=mod.get("sn"),
-                name=mod.get("name"),
-                type=CSModuleType(mod.get("type")),
-                index=mod.get("index"),
-            )
+            module = CSModuleFromJson(mod)
             if module not in modules:
                 modules.append(module)
             else:
@@ -210,6 +223,30 @@ def DeviceModelFromType(acc_type: AccType) -> str:
     return "unknown"
 
 
+def DeviceInfoFromCSModule(module: CSModule) -> DeviceInfo:
+    """Create DeviceInfo from CSModule."""
+    if module.type == CSModuleType.CSMIO_IO:
+        dev_name = f"CSMIO-IO addr.{module.index}"
+        dev_model = "CSMIO-IO CAN"
+    elif module.type == CSModuleType.LBUS_WLED:
+        dev_name = "LBUS-WLED Driver"
+        dev_model = "csLEDPWM Driver"
+    elif module.type == CSModuleType.CSLIGHT_CTRL:
+        dev_name = "csLIGHT Controller"
+        dev_model = "csLightsCtrl F7x"
+    else:
+        dev_name = "Unknown"
+        dev_model = "Unknown"
+
+    return DeviceInfo(
+        identifiers={(DOMAIN, f"{module.type}_{module.index}_{module.sn}")},
+        name=dev_name,
+        model=dev_model,
+        manufacturer="CS-Lab s.c.",
+        serial_number=module.sn,
+    )
+
+
 def DeviceInfoFromHomeItem(item: CSHomeItem) -> DeviceInfo | None:
     """Create DeviceInfo from CSHomeItem."""
     mods = item.all_modules()
@@ -225,24 +262,6 @@ def DeviceInfoFromHomeItem(item: CSHomeItem) -> DeviceInfo | None:
     else:
         suggested_area = item.accessory.location.room
 
-    if mods[0].type == CSModuleType.CSMIO_IO:
-        dev_name = f"CSMIO-IO addr.{mods[0].index}"
-        dev_model = "CSMIO-IO CAN"
-    elif mods[0].type == CSModuleType.LBUS_WLED:
-        dev_name = "LBUS-WLED Driver"
-        dev_model = "csLEDPWM Driver"
-    elif mods[0].type == CSModuleType.CSLIGHT_CTRL:
-        dev_name = "csLIGHT Controller"
-        dev_model = "csLightsCtrl F7x"
-    else:
-        dev_name = "Unknown"
-        dev_model = "Unknown"
-
-    return DeviceInfo(
-        identifiers={(DOMAIN, f"{mods[0].type}_{mods[0].index}_{mods[0].sn}")},
-        name=dev_name,
-        model=dev_model,
-        manufacturer="CS-Lab s.c.",
-        suggested_area=suggested_area,
-        serial_number=mods[0].sn,
-    )
+    devInfo = DeviceInfoFromCSModule(mods[0])
+    devInfo["suggested_area"] = suggested_area
+    return devInfo
