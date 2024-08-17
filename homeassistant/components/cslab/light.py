@@ -65,6 +65,7 @@ class CSLight(LightEntity):
         self._csmaster = csmaster
         self._home_item = item
         if item.has_brightness():
+            self._name = f"{item.accessory.location.room}-{item.accessory.location.zone} LED({item.accessory.location.pos_x},{item.accessory.location.pos_y})"
             self._attr_supported_color_modes = {ColorMode.BRIGHTNESS}
             self._attr_color_mode = ColorMode.BRIGHTNESS
         else:
@@ -94,11 +95,6 @@ class CSLight(LightEntity):
         """Return a unique ID."""
         acc = self._home_item.accessory
         return f"{DeviceModelFromType(acc.type)}.{acc.id:03}"
-
-    @property
-    def device_id(self) -> str:
-        """Return the device ID."""
-        return self.unique_id
 
     @property
     def name(self) -> str:

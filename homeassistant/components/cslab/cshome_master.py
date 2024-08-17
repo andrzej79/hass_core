@@ -92,7 +92,7 @@ class CSHomeMaster:
                     _log.error("Connection error, reconnecting...")
                     await asyncio.sleep(5)
                     if await self.initConnection() is True:
-                        await self.devs_publish_update()
+                        await self.update_all_accessories()
                         _log.info("Connection restored")
                     continue
                 await self.parseIncomingData(rplData)
@@ -379,6 +379,11 @@ class CSHomeMaster:
             _log.error("Module list not receive timeout")
             return False
         return True
+
+    async def update_all_accessories(self) -> None:
+        """Update all accessories."""
+        for home_item in self._home_items:
+            await self.updateAccessoryReq(home_item.accessory.id)
 
     async def devs_publish_update(self) -> None:
         """Set publish update for all devices."""

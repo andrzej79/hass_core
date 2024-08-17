@@ -101,11 +101,6 @@ class CSBlind(CoverEntity):
         return f"{DeviceModelFromType(acc.type)}.{acc.id:03}"
 
     @property
-    def device_id(self) -> str:
-        """Return the device ID."""
-        return self.unique_id
-
-    @property
     def name(self) -> str:
         """Return the name of the window blind."""
         return self._name

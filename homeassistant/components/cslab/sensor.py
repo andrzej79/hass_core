@@ -120,11 +120,6 @@ class CSLightSensorBase(SensorEntity):
         return DeviceInfoFromHomeItem(self._dev.get_home_item())
 
     @property
-    def device_id(self) -> str | None:
-        """Return the device ID."""
-        return self.unique_id
-
-    @property
     def name(self) -> str | None:
         """Return the name of the sensor."""
         return self._name
@@ -263,11 +258,6 @@ class CSLightBusSensor(SensorEntity):
     def device_info(self) -> DeviceInfo | None:
         """Return the device info."""
         return DeviceInfoFromCSModule(self._dev.get_module())
-
-    @property
-    def device_id(self) -> str | None:
-        """Return the device ID."""
-        return self.unique_id
 
     @property
     def name(self) -> str | None:
