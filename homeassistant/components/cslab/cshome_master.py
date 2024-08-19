@@ -39,7 +39,6 @@ class CSHomeMaster:
         self._switches: list[CSWallSwitchDev] = []
         self._hwModules: list[CSModule] = []
         self._ctrlModDevs: list[CSLightsCtrlModDev] = []
-        self._tst = 0.0
         self._tcpConnectionReady = asyncio.Event()
         self._homeModelReady = asyncio.Event()
         self._moduleListReady = asyncio.Event()
@@ -49,9 +48,35 @@ class CSHomeMaster:
         _log.info("CSHomeMaster initialized host: %s port: %d", self.host, self.port)
         hass.data.setdefault(DOMAIN, {})[self.config_entry.entry_id] = self
 
+    def __del__(self) -> None:
+        """Destructor."""
+        _log.info("CSHomeMaster deleted")
+
+    async def async_cleanup(self) -> None:
+        """Cleanup."""
+        if self._task is not None:
+            self._task.cancel()
+        if self._tcpWriter is not None:
+            self._tcpWriter.close()
+        if self._tcpReader is not None:
+            self._tcpReader.feed_eof()
+        self._home_items.clear()
+        self._lights.clear()
+        self._blinds.clear()
+        self._relays.clear()
+        self._switches.clear()
+        self._hwModules.clear()
+        self._ctrlModDevs.clear()
+        _log.info("CSHomeMaster cleanup completed")
+
     async def async_setup(self) -> bool:
         """Async setup of cshome master."""
-        self._task = asyncio.ensure_future(self.async_task())
+        _log.debug("CSHomeMaster async setup")
+        self._task = self.hass.async_create_background_task(
+            self.async_task(), name="CSHomeMaster rx handler"
+        )
+        _log.debug("CSHomeMaster async task created")
+
         # wait for connection to be ready
         try:
             await asyncio.wait_for(self._tcpConnectionReady.wait(), timeout=5)
@@ -70,6 +95,7 @@ class CSHomeMaster:
             _log.error("Module list receive timeout!")
             return False
         # connection ready, home model received
+        _log.debug("CSHomeMaster setup completed")
         return True
 
     @property
@@ -79,10 +105,11 @@ class CSHomeMaster:
 
     async def async_task(self) -> None:
         """Async task."""
-        _log.debug("Async task started")
+        _log.debug("receiver async_task started")
         try:
             await self.initConnection()
             while True:
+                await asyncio.sleep(0)
                 if self._tcpReader is None:
                     raise RuntimeError("TCP reader is None")
                 rplData = await self._tcpReader.readline()
@@ -98,7 +125,7 @@ class CSHomeMaster:
                 await self.parseIncomingData(rplData)
 
         except asyncio.CancelledError:
-            _log.info("Async task cancelled")
+            _log.info("receiver async_task cancelled")
             return
 
     async def initConnection(self) -> bool:
@@ -205,6 +232,7 @@ class CSHomeMaster:
             _log.error("Invalid json (no accessories) home model data: %s", jrpl)
             return
         for acc in accessories:
+            await asyncio.sleep(0)
             home_item = CSHomeItemFromJson(acc)
             self._home_items.append(home_item)
             if home_item.accessory.type == AccType.LIGHT:

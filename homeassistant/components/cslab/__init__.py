@@ -24,12 +24,12 @@ PLATFORMS: list[Platform] = [
 # Rename type alias and update all entry annotations
 type CSNameConfigEntry = ConfigEntry[CSHomeMaster]
 
+_log = logging.getLogger(__name__)
+
 
 # Update entry annotation
 async def async_setup_entry(hass: HomeAssistant, entry: CSNameConfigEntry) -> bool:
     """Set up csLights from a config entry."""
-
-    logger = logging.getLogger(__name__)
 
     # Create API instance
     csmaster = CSHomeMaster(hass, entry)
@@ -38,9 +38,10 @@ async def async_setup_entry(hass: HomeAssistant, entry: CSNameConfigEntry) -> bo
     if DOMAIN not in hass.data:
         hass.data[DOMAIN] = {}
     hass.data[DOMAIN][entry.entry_id] = csmaster
+    _log.info("CSHomeMaster setup entry %s", entry.entry_id)
 
     if not await csmaster.async_setup():
-        logger.error("CSHomeMaster setup failed")
+        _log.error("CSHomeMaster setup failed")
         return False
 
     # Forward the setup to the platform(s)
@@ -51,4 +52,11 @@ async def async_setup_entry(hass: HomeAssistant, entry: CSNameConfigEntry) -> bo
 
 async def async_unload_entry(hass: HomeAssistant, entry: CSNameConfigEntry) -> bool:
     """Unload a config entry."""
+    _log.info("Unloading CSHomeMaster entry %s", entry.entry_id)
+    csmaster: CSHomeMaster = hass.data[DOMAIN][entry.entry_id]
+    if csmaster is not None:
+        await csmaster.async_cleanup()
+        hass.data[DOMAIN][entry.entry_id] = None
+        _log.info("CSHomeMaster cleanup done")
+
     return await hass.config_entries.async_unload_platforms(entry, PLATFORMS)
