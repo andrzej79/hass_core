@@ -5,7 +5,7 @@ from __future__ import annotations
 import logging
 
 from homeassistant.config_entries import ConfigEntry
-from homeassistant.const import Platform
+from homeassistant.const import CONF_HOST, Platform
 from homeassistant.core import HomeAssistant
 
 from .const import DOMAIN
@@ -27,6 +27,20 @@ type CSNameConfigEntry = ConfigEntry[CSHomeMaster]
 _log = logging.getLogger(__name__)
 
 
+async def async_update_listener(hass: HomeAssistant, entry: CSNameConfigEntry):
+    """Handle options update."""
+    _log.info("CSHomeMaster options updated %s", entry.entry_id)
+    new_host = entry.options.get("master_host")
+    old_host = entry.data.get(CONF_HOST)
+    _log.info("Host set in options: %s", new_host)
+    _log.info("Old Host: %s", old_host)
+    if new_host is not None and new_host != "":
+        hass.config_entries.async_update_entry(entry, data={CONF_HOST: new_host})
+        _log.info("CSHomeMaster options update done")
+    else:
+        _log.error("CSHomeMaster options update failed, bad host name")
+
+
 # Update entry annotation
 async def async_setup_entry(hass: HomeAssistant, entry: CSNameConfigEntry) -> bool:
     """Set up csLights from a config entry."""
@@ -42,14 +56,18 @@ async def async_setup_entry(hass: HomeAssistant, entry: CSNameConfigEntry) -> bo
 
     if not await csmaster.async_setup():
         _log.error("CSHomeMaster setup failed")
-        return False
+        # return False
 
     # Forward the setup to the platform(s)
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
 
+    # add options update listener
+    entry.async_on_unload(entry.add_update_listener(async_update_listener))
+
     return True
 
 
+# unload_entry function
 async def async_unload_entry(hass: HomeAssistant, entry: CSNameConfigEntry) -> bool:
     """Unload a config entry."""
     _log.info("Unloading CSHomeMaster entry %s", entry.entry_id)
